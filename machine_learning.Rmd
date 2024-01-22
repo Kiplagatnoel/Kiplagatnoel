@@ -1,0 +1,335 @@
+---
+title: "Machine Learning using PimaIndiansDiabetes Dataset"
+author: "Kiplagat John Noel"
+output:
+  html_document: default
+word_document: default
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load Libraries
+
+```{r libraries, echo=FALSE}
+#MACHINE LEARNING WITH CARET
+library(caret)
+library(mlbench)
+library(cowplot)
+library(caretEnsemble)
+library(purrr)
+library(dplyr)
+library(magrittr)
+library(reshape2)
+library(corrplot)
+library(tibble)
+```
+
+
+# Visualize diabetes status for all sabjects
+
+```{r PimaIndiansDiabetes}
+data(PimaIndiansDiabetes)
+
+# Visualize diabetes status for all sabjects
+dat <- PimaIndiansDiabetes %>% dplyr::mutate(status = ifelse(diabetes == "neg", 0, 1))
+#select glucose,age, and status
+df <- dat %>% select(glucose,age,status) 
+#convert status to factor
+df$status <- as.factor(df$status)
+col <- c("0"="blue", "1"="red")
+p <- df %>% 
+      ggplot(.,aes(x=age,y=glucose,color=factor(status))) + 
+      geom_point(size=4, shape=19, alpha=0.6) + 
+      scale_color_manual(values = col, labels=c("negative","positive"),name="Test Results")
+p
+
+```
+
+
+# Split data into training and test datasets
+
+```{r ml}
+set.seed(1234)
+idx<-createDataPartition(PimaIndiansDiabetes$diabetes,p=.75,list=FALSE)
+train<-PimaIndiansDiabetes[idx,]
+test<-PimaIndiansDiabetes[-idx,]
+
+# Using Repeated Cross-Validation with three repeats
+control<-trainControl(method="repeatedcv",number=5,repeats=3,verboseIter=F,classProbs=TRUE,savePredictions='final')
+
+# A function to create tune grid
+create_tune_grid<-function(model,tune_length){
+params<-modelLookup(model)$parameter
+grid<-expand.grid(lapply(1:length(params),function(x)1:tune_length))
+names(grid)<-as.character(params)
+grid
+}
+
+# Regression models to train
+regModels <-c("rpart","lda","svmRadial","knn","glm")
+
+
+m <- lapply(regModels, function(x){
+	create_tune_grid(x,10)
+	})
+#m
+
+
+reg_df <- lapply(m,function(x){
+	as.data.frame(x)
+	#print(x)
+	})
+
+names(reg_df)<-regModels
+
+models <- c(names(reg_df))
+tunelen <- c(rep(5,length(models)))
+tune_grid<-reg_df
+
+args2<-list(method=regModels,tuneGrid=tune_grid,tuneLength=tunelen)
+my_models<-pmap(args2,caretModelSpec)
+
+names(my_models)<-regModels
+
+
+suppressWarnings(model_list<-caretList(
+diabetes~.,
+data=train,
+trControl=control,
+metric="Accuracy",
+tuneList=my_models
+), classes = "Warning")
+
+
+metrics <-lapply(model_list,"[[",14)
+
+acc <- lapply(metrics,"[[",1)
+
+acc_df<-lapply(acc,function(x){
+	data.frame(x)
+	})
+
+kappa<-lapply(metrics,"[[",2)
+
+kappa_df<-lapply(kappa,function(x){
+	data.frame(x)
+	})
+
+fit<-caretEnsemble(model_list)
+head(fit$models$rpart$pred)
+```
+
+# A plot of fitted models
+```{r fit}
+plot(fit)
+```
+
+
+# Accuracy of the ensemble models
+```{r ens_mod_acc}
+ens_mod_acc<-fit$ens_model$results[2]
+ens_mod_acc
+```
+
+
+
+# RPART perfomance
+```{r, ind_plots}
+all_mod_performance <- fit$models
+rpart_perf <- ggplot(all_mod_performance$rpart)
+rpart_perf
+```
+
+# svmRadial perfomance
+```{r, ind_plots}
+svmRadial_perf <- ggplot(all_mod_performance$svmRadial)
+svmRadial_perf
+```
+
+
+# knn perfomance
+```{r, ind_plots}
+knn_perf <- ggplot(all_mod_performance$knn)
+knn_perf
+```
+
+
+
+# Plot Model Accuracies
+```{r accuracy_plots}
+results <- resamples(model_list)
+summ <- summary(results)
+
+#Plot Model Accuracies
+accuracy <- data.frame(summ$statistics$Accuracy)
+accuracy <- rownames_to_column(accuracy,var="Model")
+ap <- ggplot(accuracy, aes(x=Model,y=Mean))+
+    geom_col( aes(fill = Model ), position = "dodge")+
+    ggtitle("Accuracy comparison across trained models")+
+    labs(x="Model", y="Accuracy")+
+    geom_text(aes(label=paste(round(Mean*100,digits = 2),"%"), vjust=-0.5))+
+    theme(
+        axis.title.x=element_text(size=12, face = "bold", color = "black"),
+        axis.text.x=element_text(size=12,face="bold",angle = 45, hjust = 1, vjust = 0.5),
+        plot.title=element_text(color="darkgreen", size=18, hjust=0.5),
+        axis.text.y=element_text(size=12,face="bold"),
+        axis.title.y=element_text(size=12, face = "bold", color = "black")
+    )
+ap
+```
+
+
+
+#Visualization of Model Kappa
+
+```{r kappa_plots}
+kappa <- data.frame(summ$statistics$Kappa)
+kappa <- rownames_to_column(kappa,var="Model")
+kp <- ggplot(kappa, aes(x=Model,y=Mean))+
+    geom_col( aes(fill = Model ), position = "dodge")+
+    ggtitle("Kappa comparison across trained models")+
+    labs(x="Model", y="Kappa")+
+    geom_text(aes(label=paste(round(Mean*100,digits = 2),"%"), vjust=-0.5))+
+    theme(
+        axis.title.x=element_text(size=12, face = "bold", color = "black"),
+        axis.text.x=element_text(size=12,face="bold",angle = 45, hjust = 1, vjust = 0.5),
+        plot.title=element_text(color="darkgreen", size=18, hjust=0.5),
+        axis.text.y=element_text(size=12,face="bold"),
+        axis.title.y=element_text(size=12, face = "bold", color = "black")
+    )
+
+kp
+```
+
+
+
+## Model Correlation
+If the predictions for the sub-models were highly corrected (> 0:75) then they would be making the same or very similarpredictions most of the time reducing the benefit of combining the predictions.
+
+```{r cor}
+
+
+# Visualize models correlation
+mod_cor <- modelCor(results)
+corrplot(mod_cor)
+
+```
+
+
+The two methods with the highest correlation between their predictions are Logistic Regression (svmRadial) and RF
+at 0.27 correlation which is not considered high (> 0:75).
+
+```{r splom}
+splom(results)
+```
+
+
+# Visually inspect model accuracies using box-whisker plot
+
+```{r box_wisker_plot}
+scales <- list(x=list(relation="free"), y=list(relation="free"))
+bwplot(results, scales=scales)
+```
+
+
+
+Evaluate the overlap of estimate behavour (Accuracy and Kappa)......The higher the Accuracy the lower the Kappa
+
+# density plots of accuracy
+```{r density_plot}
+scales <- list(x=list(relation="free"), y=list(relation="free"))
+densityplot(results, scales=scales, pch = "|")
+```
+
+
+#Dot plots
+They show both the mean estimated accuracy as well as the 95% confidence interval (e.g. the range in which 95% of observed scores fell).
+
+Dot plots of accuracy
+
+```{r dot_plot}
+scales <- list(x=list(relation="free"), y=list(relation="free"))
+dotplot(results, scales=scales)
+```
+
+
+#parallell plots
+It shows how each trial of each cross validation fold behaved for each of the algorithms tested. 
+It can help you see how those hold-out subsets that were difficult for one algorithm affected other algorithms.
+
+```{r parallel_plot}
+parallelplot(results)
+```
+
+
+# Statistical significance of the difference in model predictions
+
+The lower diagonal of the table shows p-values for the null hypothesis (distributions are the same), smaller is better. We can see no diference between RPART and SVMRADIAL, we can also see little diference between the distributions for LDA and SVM.
+
+The upper diagonal of the table shows the estimated diference between the distributions.
+
+```{r summary}
+diffs <- diff(results)
+# summarize p-values for pair-wise comparisons
+summary(diffs)
+       
+```
+
+# Resample Accuracies
+
+```{r resamp_accuracy}
+plot_data <- melt(results$values)
+df <- as.data.frame(plot_data)
+names(df)<-c("Resample","Model", "Accuracy")
+df$Model <- gsub("~.*", "", df$Model)
+
+
+rp <- ggplot()+
+      geom_boxplot(data=df,aes(x=Model,y=Accuracy,color=Model))+
+      ggtitle("Resample accuracy for ML models estimated")+
+      stat_summary(fun.data = mean, colour = "red", geom = "point")+
+      theme_bw()
+
+rp
+```
+
+# Variable Importance plots
+
+```{r, imp_plots}
+all_models <- fit$models
+imp_plots <-lapply(all_models, function(x){
+ 	imp<-varImp(x)
+ 	ggplot(imp)+
+ 	ggtitle(x)
+ })
+```
+
+
+# LDA Variable Importance plot
+```{r}
+ldaplot <- imp_plots[2]
+ldaplot
+```
+
+
+# svmRadial Variable Importance plot
+```{r}
+svmRadialplot <- imp_plots[3]
+svmRadialplot
+```
+
+# knn Variable Importance plot
+```{r}
+knn_plot <- imp_plots[4]
+knn_plot
+```
+
+
+# glm Variable Importance plot
+```{r}
+glm_plot <- imp_plots[5]
+glm_plot
+```
